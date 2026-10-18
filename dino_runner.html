@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dino Runner</title>
+<style>
+  :root { --ink: #535353; --muted: #c9c9c9; --paper: #fff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); }
+  body {
+    min-height: 100vh; display: grid; place-items: center; padding: 18px;
+    font-family: "Courier New", monospace;
+  }
+  .game-shell { width: min(100%, 960px); }
+  .topbar { display: flex; justify-content: flex-end; gap: 28px; margin: 0 3px 14px; font-size: clamp(13px, 2.3vw, 20px); font-weight: 700; letter-spacing: 2px; }
+  .stage {
+    position: relative; width: 100%; height: clamp(260px, 48vw, 360px);
+    overflow: hidden; background: #fff; border: 1px solid #f0f0f0; outline: none;
+    touch-action: manipulation; cursor: pointer;
+  }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+  .overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 18px; background: rgba(255,255,255,.72); text-align: center;
+  }
+  .overlay[hidden] { display: none; }
+  .overlay h1 { margin: 0; font-size: clamp(20px, 4vw, 32px); letter-spacing: .18em; }
+  .overlay p { margin: 0; font-size: 13px; letter-spacing: .04em; }
+  button {
+    border: 0; background: var(--ink); color: #fff; font: inherit; font-weight: bold;
+    padding: 12px 18px; border-radius: 4px; cursor: pointer; letter-spacing: .06em;
+  }
+  button:hover { background: #333; }
+  .restart { width: 58px; height: 48px; padding: 0; font-size: 27px; line-height: 1; }
+  .help { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin-top: 13px; color: #888; font-size: 12px; }
+  kbd { border: 1px solid #ddd; border-bottom-width: 2px; padding: 2px 6px; border-radius: 3px; color: #555; background: #fafafa; }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<main class="game-shell">
+  <div class="topbar" aria-live="polite">
+    <span>HI <span id="highScore">00000</span></span>
+    <span id="score">00000</span>
+  </div>
+  <div class="stage" id="stage" tabindex="0" role="application" aria-label="Dino runner game. Press Space or tap to jump.">
+    <canvas id="game" width="960" height="360"></canvas>
+    <div class="overlay" id="startOverlay">
+      <h1>DINO RUNNER</h1>
+      <p>JUMP OVER THE CACTI</p>
+      <button id="startBtn">START GAME</button>
+      <p><kbd>SPACE</kbd> / <kbd>↑</kbd> / TAP TO JUMP</p>
+    </div>
+    <div class="overlay" id="overOverlay" hidden>
+      <h1>GAME OVER</h1>
+      <p id="finalScore">SCORE 00000</p>
+      <button class="restart" id="restartBtn" aria-label="Restart game" title="Restart">↻</button>
+      <p><kbd>SPACE</kbd> OR TAP TO RESTART</p>
+    </div>
+  </div>
+  <div class="help">
+    <span>SPACE / ↑ / TAP — JUMP</span>
+    <span>AVOID THE CACTI</span>
+  </div>
+</main>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const stage = document.getElementById('stage');
+  const scoreEl = document.getElementById('score');
+  const highScoreEl = document.getElementById('highScore');
+  const startOverlay = document.getElementById('startOverlay');
+  const overOverlay = document.getElementById('overOverlay');
+  const finalScoreEl = document.getElementById('finalScore');
+  const startBtn = document.getElementById('startBtn');
+  const restartBtn = document.getElementById('restartBtn');
+
+  const W = canvas.width, H = canvas.height, groundY = 292;
+  let state = 'ready', score = 0, highScore = 0, speed = 6, frame = 0;
+  let obstacles = [], clouds = [], groundBits = [], lastTime = 0, spawnTimer = 0;
+  const dino = { x: 72, y: groundY - 48, w: 38, h: 48, vy: 0, grounded: true, leg: 0 };
+  const GRAVITY = 0.72, JUMP = -13.4;
+
+  function pad(n) { return String(Math.floor(n)).padStart(5, '0'); }
+  function initScenery() {
+    clouds = [{x: 145, y: 64, w: 56}, {x: 470, y: 35, w: 62}, {x: 760, y: 75, w: 56}];
+    groundBits = Array.from({length: 48}, (_, i) => ({x: i * 22, y: groundY + 12 + Math.random() * 14, w: 3 + Math.random() * 4}));
+  }
+  function rect(x,y,w,h,color='#535353') { ctx.fillStyle = color; ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+  function drawCloud(c) {
+    ctx.strokeStyle = '#c9c9c9'; ctx.lineWidth = 3; ctx.beginPath();
+    ctx.moveTo(c.x, c.y + 14); ctx.lineTo(c.x + 8, c.y + 14); ctx.lineTo(c.x + 8, c.y + 8);
+    ctx.lineTo(c.x + 19, c.y + 8); ctx.lineTo(c.x + 19, c.y + 3); ctx.lineTo(c.x + 31, c.y + 3);
+    ctx.lineTo(c.x + 31, c.y); ctx.lineTo(c.x + 42, c.y); ctx.lineTo(c.x + 42, c.y + 5);
+    ctx.lineTo(c.x + 50, c.y + 5); ctx.lineTo(c.x + 50, c.y + 10); ctx.lineTo(c.x + c.w, c.y + 10);
+    ctx.stroke();
+  }
+  function drawDino() {
+    const x = dino.x, y = dino.y;
+    // Pixel-style T-Rex silhouette
+    rect(x+12,y,21,7); rect(x+7,y+6,29,20); rect(x+31,y+12,8,9);
+    rect(x+25,y+23,9,5); rect(x+20,y+28,10,5); rect(x+13,y+25,12,15);
+    rect(x+5,y+31,13,10); rect(x,y+28,8,6); rect(x+3,y+36,10,7);
+    rect(x+10,y+39,15,5); rect(x+8,y+43,7,5); rect(x+21,y+42,7,6);
+    rect(x+25,y+31,6,5);
+    // eye
+    rect(x+28,y+7,4,4,'#fff');
+    // legs animate while running
+    if (dino.grounded && state === 'playing') {
+      const step = Math.floor(frame / 5) % 2;
+      if (step === 0) { rect(x+11,y+43,6,5); rect(x+20,y+43,6,3); rect(x+17,y+46,5,3); }
+      else { rect(x+11,y+43,6,3); rect(x+8,y+46,8,3); rect(x+23,y+43,5,5); }
+    }
+  }
+  function drawCactus(o) {
+    const x=o.x, y=groundY-o.h;
+    rect(x+o.w*.38,y, o.w*.24,o.h);
+    rect(x+o.w*.08,y+o.h*.38,o.w*.30,5);
+    rect(x+o.w*.08,y+o.h*.25,5,o.h*.2);
+    rect(x+o.w*.62,y+o.h*.55,o.w*.30,5);
+    rect(x+o.w*.84,y+o.h*.40,5,o.h*.2);
+  }
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+    clouds.forEach(drawCloud);
+    // Ground line and little pixel marks
+    rect(0,groundY,W,3,'#535353');
+    groundBits.forEach(b => rect(b.x, b.y, b.w, 2, '#777'));
+    drawDino();
+    obstacles.forEach(drawCactus);
+    if (state === 'ready') {
+      // a subtle hint obstacle
+      drawCactus({x: 420, w: 22, h: 42});
+    }
+  }
+  function reset() {
+    score=0; speed=6; frame=0; spawnTimer=0; obstacles=[];
+    dino.y=groundY-dino.h; dino.vy=0; dino.grounded=true; dino.leg=0;
+    initScenery(); scoreEl.textContent=pad(0); lastTime=0;
+  }
+  function start() {
+    reset(); state='playing'; startOverlay.hidden=true; overOverlay.hidden=true;
+    stage.focus();
+    requestAnimationFrame(loop);
+  }
+  function jump() {
+    if (state === 'ready') { start(); return; }
+    if (state === 'over') { start(); return; }
+    if (dino.grounded) { dino.vy=JUMP; dino.grounded=false; }
+  }
+  function endGame() {
+    state='over'; highScore=Math.max(highScore, Math.floor(score));
+    highScoreEl.textContent=pad(highScore);
+    finalScoreEl.textContent='SCORE ' + pad(score);
+    overOverlay.hidden=false;
+  }
+  function update(dt) {
+    frame += dt;
+    speed = Math.min(12, 6 + score/450);
+    score += dt * 0.18;
+    scoreEl.textContent=pad(score);
+    dino.vy += GRAVITY * dt; dino.y += dino.vy * dt;
+    if (dino.y >= groundY-dino.h) { dino.y=groundY-dino.h; dino.vy=0; dino.grounded=true; }
+    clouds.forEach(c => { c.x -= speed * .22 * dt; if(c.x < -c.w) c.x=W+20; });
+    groundBits.forEach(b => { b.x -= speed * dt; if(b.x < -8) b.x=W+Math.random()*20; });
+    obstacles.forEach(o => o.x -= speed*dt);
+    obstacles = obstacles.filter(o => o.x + o.w > -10);
+    spawnTimer += dt;
+    if (spawnTimer > Math.max(52, 92 - speed*3) && obstacles.length < 3) {
+      const h = 30 + Math.random()*27, w = 17 + Math.random()*9;
+      obstacles.push({x:W+20,w,h}); spawnTimer=0;
+    }
+    // forgiving collision box for fair play
+    const dx=dino.x+7, dy=dino.y+5, dw=dino.w-12, dh=dino.h-7;
+    for (const o of obstacles) {
+      const ox=o.x+2, oy=groundY-o.h+2, ow=o.w-4, oh=o.h-2;
+      if (dx < ox+ow && dx+dw > ox && dy < oy+oh && dy+dh > oy) { endGame(); break; }
+    }
+  }
+  function loop(time) {
+    if(state!=='playing') { draw(); return; }
+    if(!lastTime) lastTime=time;
+    const dt=Math.min((time-lastTime)/16.667, 2.2); lastTime=time;
+    update(dt); draw();
+    if(state==='playing') requestAnimationFrame(loop);
+  }
+  startBtn.addEventListener('click', e => { e.stopPropagation(); start(); });
+  restartBtn.addEventListener('click', e => { e.stopPropagation(); start(); });
+  stage.addEventListener('pointerdown', e => {
+    if(e.target.closest('button')) return;
+    jump();
+  });
+  window.addEventListener('keydown', e => {
+    if(['Space','ArrowUp','KeyW'].includes(e.code)) { e.preventDefault(); jump(); }
+    if(e.code==='Enter' && state!=='playing') start();
+  });
+  initScenery(); draw();
+})();
+</script>
+</body>
+</html>
